@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multiplayer Hockey Highlighter — FINAL PROFESSIONAL BUILD
+Multiplayer Hockey Highlighter 
 
 WORKFLOW:
 1. Run script -> Select (e)ditor.
