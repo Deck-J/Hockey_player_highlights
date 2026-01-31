@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multiplayer Hockey Highlighter 
+Multiplayer Hockey Highlighter — FINAL PROFESSIONAL BUILD (v2.7)
 
 WORKFLOW:
 1. Run script -> Select (e)ditor.
@@ -8,12 +8,11 @@ WORKFLOW:
 3. Quit (auto-saves).
 4. Run script -> Select (r)ender to burn final video.
 
-ADVANCED FEATURES:
-✅ 5 Slots with Distinct Colors
-✅ Anti-Drift Histogram (Prevents learning wrong colors during blocks)
-✅ Center-Weighted Masking (Focuses on jersey logo, ignores arms)
-✅ Back-Facing Logic (Trusts physics more when logo disappears)
-✅ Staggered OCR (Prevents CPU crashes)
+UPDATES v2.7:
+✅ JUMP PHYSICS: Relaxed vertical constraints. Tracker now handles jumps/falls easily.
+✅ ELASTIC BOX: Allows 60% shape change (knees up/legs straight) without unlocking.
+✅ CUSTOM COLORS: Slot 3 (Orange), Slot 4 (Royal Blue).
+✅ OCR: Enhanced High-Contrast Pre-processing.
 """
 
 import os
@@ -37,8 +36,8 @@ except Exception:
 # ============================================================
 # USER CONFIG
 # ============================================================
-VIDEO_PATH  = "/Users/deckj/Documents/Game_Processor/Noah_powerplay_cloud_apo8_alq13.mp4"
-OUTPUT_PATH = "Noah_point_powerplay_marked.mp4"
+VIDEO_PATH  = "/Users/deckj/Documents/Game_Processor/Kai_goal_vs_NJR.mp4"
+OUTPUT_PATH = "Kai_goal_njr_marked.mp4"
 DATA_FILE   = VIDEO_PATH + ".tracking_data.json"
 
 YOLO_WEIGHTS = "yolo11s.pt"
@@ -50,11 +49,13 @@ MAX_HIGHLIGHTS = 5
 # ============================================================
 DRAW_FEET_MARKER = True
 FEET_THICKNESS = 4
+
+# COLORS (BGR Format)
 SLOT_COLORS = [
     (0, 0, 255),     # Slot 1: Red
     (0, 255, 255),   # Slot 2: Yellow
-    (255, 0, 255),   # Slot 3: Magenta
-    (255, 255, 0),   # Slot 4: Cyan
+    (0, 165, 255),   # Slot 3: Orange
+    (225, 65, 0),    # Slot 4: Royal Blue
     (0, 255, 0),     # Slot 5: Green
 ]
 
@@ -79,25 +80,25 @@ HUD_BG_COLOR = (90, 40, 10)
 HUD_TEXT_COLOR = (255, 255, 255)
 
 # ============================================================
-# OCR CONFIG (Staggered for Stability)
+# OCR CONFIG
 # ============================================================
 USE_OCR = True
 OCR_GPU = False
-OCR_EVERY_N_FRAMES_WHEN_LOST = 45  # Check every 1.5s
-OCR_MIN_LOST_FRAMES = 30           # Wait 1s before checking
+OCR_EVERY_N_FRAMES_WHEN_LOST = 45
+OCR_MIN_LOST_FRAMES = 30
 OCR_ALLOWLIST = "0123456789"
 DEFAULT_NUMBER_HINTS = ["", "", "", "", ""]
 
 # ============================================================
-# TRACKING TUNING (Hockey Optimized)
+# TRACKING TUNING (Jump Optimized)
 # ============================================================
 REACQUIRE_THRESHOLD = 135
 MAX_LOST_BEFORE_SWITCH = 60
-SEARCH_RADIUS_BASE = 250       # WIDER for hockey gliding
-SEARCH_RADIUS_GROWTH = 12      # Grow faster
-SWITCH_CONFIRM_FRAMES = 30     # Lock on faster (was 45)
+SEARCH_RADIUS_BASE = 300       # Increased for jumps
+SEARCH_RADIUS_GROWTH = 12
+SWITCH_CONFIRM_FRAMES = 30
 MIN_IOU_TO_KEEP = 0.06
-MAX_HEIGHT_RATIO_DELTA = 0.30
+MAX_HEIGHT_RATIO_DELTA = 0.60  # [FIX] Allow 60% shape change (crouch vs jump)
 MIN_HIST_SIM_TO_KEEP = 0.18
 
 # ============================================================
@@ -110,38 +111,28 @@ AUDIO_BITRATE  = "192k"
 
 class FFmpegVideoWriter:
     def __init__(self, src_video, out_video, width, height, fps):
-        self.width = int(width)
-        self.height = int(height)
+        self.width = int(width) if int(width) % 2 == 0 else int(width) - 1
+        self.height = int(height) if int(height) % 2 == 0 else int(height) - 1
         self.fps = float(fps)
         self.cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{self.width}x{self.height}",
-            "-r", f"{self.fps:.03f}",
-            "-i", "-",
-            "-i", src_video,
-            "-map", "0:v:0",
-            "-map", "1:a?",
-            "-shortest",
-            "-c:v", "hevc_videotoolbox",
-            "-tag:v", "hvc1",
-            "-b:v", HEVC_BITRATE,
-            "-maxrate", HEVC_MAXRATE,
-            "-bufsize", HEVC_BUFSIZE,
-            "-c:a", "aac",
-            "-b:a", AUDIO_BITRATE,
-            "-movflags", "+faststart",
-            out_video,
+            "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{self.width}x{self.height}", "-r", f"{self.fps:.03f}",
+            "-i", "-", "-i", src_video, "-map", "0:v:0", "-map", "1:a:0?",
+            "-shortest", "-c:v", "hevc_videotoolbox", "-tag:v", "hvc1",
+            "-b:v", HEVC_BITRATE, "-maxrate", HEVC_MAXRATE, "-bufsize", HEVC_BUFSIZE,
+            "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-movflags", "+faststart", out_video
         ]
         self.proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=10**7)
 
     def write(self, frame_bgr):
-        if self.proc.poll() is not None: raise RuntimeError("FFmpeg exited unexpectedly.")
         if frame_bgr.shape[1] != self.width or frame_bgr.shape[0] != self.height:
             frame_bgr = cv2.resize(frame_bgr, (self.width, self.height))
-        try: self.proc.stdin.write(frame_bgr.tobytes())
-        except BrokenPipeError: raise RuntimeError("FFmpeg pipe broke.")
+        try:
+            self.proc.stdin.write(frame_bgr.tobytes())
+        except BrokenPipeError:
+            _, stderr = self.proc.communicate()
+            print(f"\n\n[CRITICAL ERROR] FFmpeg crashed!\n{'-'*40}\n{stderr.decode('utf-8') if stderr else 'Unknown Error'}\n{'-'*40}")
+            raise RuntimeError("FFmpeg rendering failed.")
 
     def close(self):
         if self.proc.stdin: self.proc.stdin.close()
@@ -155,7 +146,10 @@ def pick_device():
     return "cpu"
 DEVICE = pick_device()
 
-def get_builtin_bytetrack_yaml():
+def get_tracker_yaml():
+    p = os.path.join(os.path.dirname(ultralytics.__file__), "cfg", "trackers", "botsort.yaml")
+    if os.path.exists(p): return p
+    print("[WARN] botsort.yaml not found, falling back to bytetrack.")
     return os.path.join(os.path.dirname(ultralytics.__file__), "cfg", "trackers", "bytetrack.yaml")
 
 def detect_video_props(cap):
@@ -200,18 +194,14 @@ def torso_crop(frame, box):
     if cy2<=cy1 or cx2<=cx1: return None
     return frame[cy1:cy2, cx1:cx2]
 
-# [IMPROVEMENT] Center-Weighted Mask for Histograms
 def get_color_hist(frame, box):
     crop = torso_crop(frame, box)
     if crop is None or crop.size == 0: return None
-    
-    # Create circular mask to focus on chest/logo
     h, w = crop.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
     center = (int(w / 2), int(h / 2))
-    radius = int(min(h, w) * 0.4) # Inner 40%
+    radius = int(min(h, w) * 0.4) 
     cv2.circle(mask, center, radius, 255, -1)
-
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     hist = cv2.calcHist([hsv], [0, 1], mask, [90, 128], [0, 180, 0, 256])
     cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
@@ -227,11 +217,13 @@ def compare_hist(crop_bgr, ref_hist):
 def safe_ocr(reader, crop):
     if reader is None or crop is None or crop.size < 100: return []
     try:
-        h, w = crop.shape[:2]
-        if max(h, w) > 220:
-            s = 220.0/max(h, w)
-            crop = cv2.resize(crop, (int(w*s), int(h*s)), interpolation=cv2.INTER_AREA)
-        res = reader.readtext(crop, allowlist=OCR_ALLOWLIST, detail=1, paragraph=False)
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+        h, w = enhanced.shape
+        if h < 50: enhanced = cv2.resize(enhanced, (0,0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        elif h > 300: enhanced = cv2.resize(enhanced, (0,0), fx=300.0/h, fy=300.0/h, interpolation=cv2.INTER_AREA)
+        res = reader.readtext(enhanced, allowlist=OCR_ALLOWLIST, detail=1, paragraph=False)
         return [(txt.strip(), float(conf)) for _, txt, conf in res if txt.strip()]
     except: return []
 
@@ -320,7 +312,7 @@ def update_highlight_tracker(hh, boxes, ids, W, H, frame, fidx, ocr_reader):
         tbox = clamp_box(boxes[idx], W, H)
         found = True
         
-        # [IMPROVEMENT] Anti-Drift: Only update histogram if similarity is high
+        # Anti-Drift: Only update histogram if similarity is high
         if hh["lost"] == 0 and fidx % 30 == 0:
             cur_hist = get_color_hist(frame, tbox)
             if hh.get("ref_hist") is not None and cur_hist is not None:
@@ -345,10 +337,15 @@ def update_highlight_tracker(hh, boxes, ids, W, H, frame, fidx, ocr_reader):
         for box, tid_ in zip(boxes, ids):
             box = clamp_box(box, W, H)
             cx, cy = box_center(box)
-            dist = math.hypot(cx-px, cy-py)
+            
+            # [FIX] JUMP PHYSICS:
+            # We multiply vertical distance (cy-py) by 0.5.
+            # This makes a 100px vertical jump "cost" the same as a 50px horizontal stride.
+            # It creates an upright elliptical search area.
+            dist = math.hypot(cx-px, (cy-py)*0.5)
+            
             if dist > rad: continue
             
-            # [ADJUSTMENT] Higher motion weight for back-facing players
             s = 70.0 * (1.0 - dist/rad)
             if hh["last_box"] is not None: s += 130.0 * iou(hh["last_box"], box)
             
@@ -360,11 +357,9 @@ def update_highlight_tracker(hh, boxes, ids, W, H, frame, fidx, ocr_reader):
                 else: s -= 25.0
             
             sim = compare_hist(torso_crop(frame, box), hh.get("ref_hist"))
-            # [ADJUSTMENT] Slightly lower histogram weight (85 vs 95)
             s += 85.0 * sim
             if not allow_switch and sim < MIN_HIST_SIM_TO_KEEP: continue
             
-            # Staggered OCR
             if USE_OCR and ocr_reader and lost >= OCR_MIN_LOST_FRAMES and (fidx + hh["slot"]) % OCR_EVERY_N_FRAMES_WHEN_LOST == 0:
                 hint = hh.get("hint", "")
                 crop = torso_crop(frame, box)
@@ -407,7 +402,8 @@ def editor_mode():
     cap = cv2.VideoCapture(VIDEO_PATH)
     W, H, FPS = detect_video_props(cap)
     cfg = autotune(W, H, FPS)
-    tracker_yaml = get_builtin_bytetrack_yaml()
+    tracker_yaml = get_tracker_yaml()
+    print(f">>> Using Tracker: {os.path.basename(tracker_yaml)}")
     model = YOLO(YOLO_WEIGHTS)
     
     ocr_reader = None
@@ -415,9 +411,8 @@ def editor_mode():
         ocr_reader = easyocr.Reader(["en"], gpu=OCR_GPU)
     
     cv2.namedWindow("Editor", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Editor", cv2.WND_PROP_TOPMOST, 1) # Try to force foreground
+    cv2.setWindowProperty("Editor", cv2.WND_PROP_TOPMOST, 1) 
     
-    # State
     tracking_db = {} 
     if os.path.exists(DATA_FILE):
         try:
@@ -434,10 +429,8 @@ def editor_mode():
     show_banner = SHOW_BOTTOM_BANNER
     editor_state = {"active": False, "text": ""}
     
-    # Print menu immediately
     print_menu(paused, highlights, selected)
     
-    # ROI helpers
     roi = {"active": False, "box": (0,0,0,0), "sel": False}
     def mouse_cb(event, x, y, f, p):
         s = min(PREVIEW_MAX_W/W, PREVIEW_MAX_H/H, 1.0)
@@ -450,7 +443,6 @@ def editor_mode():
             roi["box"] = (int(x1), int(y1), int(w), int(h)); roi["sel"] = True
     cv2.setMouseCallback("Editor", mouse_cb)
 
-    # ROI Lock Logic
     def run_roi_mode(start_frame):
         roi["active"] = True; roi["sel"] = False; roi["box"] = (0,0,0,0)
         curr_f = start_frame.copy()
@@ -460,7 +452,7 @@ def editor_mode():
         while True:
             disp = curr_f.copy()
             cv2.rectangle(disp, (0,0), (disp.shape[1], 80), (0,0,0), -1)
-            cv2.putText(disp, "ROI MODE: Draw box. SPACE to lock. 'n' next cand. 'q' cancel.", (20,50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
+            cv2.putText(disp, "ROI MODE: Draw box. SPACE lock. n next. Esc/q cancel.", (20,50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 2)
             if roi["box"][2]>0:
                 x,y,w,h = roi["box"]
                 cv2.rectangle(disp, (x,y), (x+w, y+h), (255,0,0), 3)
@@ -479,7 +471,7 @@ def editor_mode():
             k = cv2.waitKey(20) & 0xFF
             
             if not roi["sel"]: frozen = False; cand = []
-            if k == ord('q'): return None
+            if k == ord('q') or k == 27: return None  # ESC OR Q TO CANCEL
             if k == ord('n') and cand: cidx = (cidx+1)%len(cand)
             if k in (32, 13) and cand: return cand[cidx]
 
@@ -524,7 +516,6 @@ def editor_mode():
         disp = resize_for_preview(frame_out)
         cv2.imshow("Editor", disp)
         
-        # INCREASED WAITKEY FOR RESPONSIVENESS
         k = cv2.waitKey(20) & 0xFF
         
         if editor_state["active"]:
@@ -559,6 +550,7 @@ def editor_mode():
 
         if k == ord('a'):
             if len(highlights) >= MAX_HIGHLIGHTS: print("Max highlights."); continue
+            paused = True # Force Pause
             res = run_roi_mode(current_frame)
             if res and isinstance(res, dict):
                 slots = {h['slot'] for h in highlights}
@@ -576,6 +568,7 @@ def editor_mode():
 
         if k == ord('r'):
             if not highlights: continue
+            paused = True # Force Pause
             print("Press 1-5 to relock slot...")
             while True:
                 k2 = cv2.waitKey(0) & 0xFF
