@@ -1,0 +1,13 @@
+ultralytics>=8.4.0      # YOLO26, BoT-SORT re-ID, SAM 2.1 / SAM 3
+lap>=0.5.12             # tracker assignment (sometimes not auto-installed)
+opencv-python
+numpy
+torch
+torchvision
+pyyaml
+
+# Jersey-number reading
+pytorch_lightning       # PARSeq (loaded via torch.hub)
+timm
+nltk
+easyocr                 # fallback reader
